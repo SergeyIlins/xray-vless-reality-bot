@@ -155,10 +155,10 @@ else
 fi
 
 # Проверка файла конфигурации бота
-if [ -f "$BOT_DIR/config.py" ]; then
-    echo -e "${GREEN}✓ config.py создан${NC}"
+if [ -f "$BOT_DIR/.env" ]; then
+    echo -e "${GREEN}✓ .env создан${NC}"
 else
-    echo -e "${RED}✗ config.py не найден!${NC}"
+    echo -e "${RED}✗ .env не найден!${NC}"
 fi
 
 # Тест добавления пользователя (прямой метод, который используется ботом)
@@ -192,6 +192,6 @@ echo "Каталог бота: $BOT_DIR"
 echo ""
 echo "Дальнейшие шаги:"
 echo "1. Убедитесь, что бот работает: /menu в Telegram"
-echo "2. При необходимости отредактируйте config.py: nano $BOT_DIR/config.py"
+echo "2. При необходимости отредактируйте .env: nano $BOT_DIR/.env"
 echo "3. Проверьте логи: journalctl -u xray-bot -f"
 echo "--------------------------------------------------"
