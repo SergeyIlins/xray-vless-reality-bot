@@ -35,10 +35,14 @@ fi
 
 # --- 3. Генерация ключей и shortId ---
 echo -e "${YELLOW}[3/10] Генерация ключей REALITY...${NC}"
-KEYS=$(xray x25519)
-PRIVATE_KEY=$(echo "$KEYS" | grep "Private key" | awk '{print $3}')
-PUBLIC_KEY=$(echo "$KEYS" | grep "Public key" | awk '{print $3}')
+# Генерация ключей (работает с любым форматом вывода xray x25519)
+PRIVATE_KEY=$(xray x25519 | head -1)
+PUBLIC_KEY=$(xray x25519 | tail -1)
 SHORT_ID=$(openssl rand -hex 8)
+if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
+    echo -e "${RED}Не удалось сгенерировать ключи REALITY.${NC}"
+    exit 1
+fi
 
 echo "Приватный ключ: $PRIVATE_KEY"
 echo "Публичный ключ: $PUBLIC_KEY"
