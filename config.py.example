@@ -1,0 +1,6 @@
+TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
+ALLOWED_USERS = {123456789}          # Ваш Telegram ID
+SERVER_IP = "YOUR_SERVER_IP"         # IP или домен сервера
+PUBLIC_KEY = "PUBLIC_KEY_FROM_XRAY"  # Публичный ключ из вывода xray x25519
+SHORT_ID = "YOUR_SHORT_ID"           # Hex-строка из 16 символов
+SNI = "www.microsoft.com"            # Домен для маскировки
