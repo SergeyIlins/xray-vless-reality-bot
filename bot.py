@@ -13,25 +13,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_USERS, SERVER_IP, PUBLIC_KEY, SHORT_ID, SNI
 
-# Конфигурация из переменных окружения
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ALLOWED_USERS_STR = os.getenv("ALLOWED_USERS", "")
-ALLOWED_USERS = {int(uid.strip()) for uid in ALLOWED_USERS_STR.split(",") if uid.strip()}
-SERVER_IP = os.getenv("SERVER_IP")
-PUBLIC_KEY = os.getenv("PUBLIC_KEY")
-SHORT_ID = os.getenv("SHORT_ID")
-SNI = os.getenv("SNI", "www.microsoft.com")
-
-# Проверка обязательных переменных
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN не задан в .env файле")
-if not SERVER_IP:
-    raise ValueError("SERVER_IP не задан в .env файле")
-if not PUBLIC_KEY:
-    raise ValueError("PUBLIC_KEY не задан в .env файле")
-if not SHORT_ID:
-    raise ValueError("SHORT_ID не задан в .env файле")
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
