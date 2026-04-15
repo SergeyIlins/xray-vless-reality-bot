@@ -11,6 +11,6 @@
 
 ## Быстрый старт
 ```bash
-git clone https://github.com/yourusername/xray-vless-reality-bot.git
+git clone https://github.com/SergeyIlins/xray-vless-reality-bot
 cd xray-vless-reality-bot
 sudo bash install.sh
