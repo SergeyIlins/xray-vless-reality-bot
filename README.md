@@ -61,7 +61,7 @@ systemctl restart xray-bot    # перезапуск Telegram-бота
 sudo bash xray_full_test.sh
 
 📋 Системные требования
-ОС: Debian 12 / Ubuntu 22.04+ (рекомендуется)
+ОС: Ubuntu 22.04+ / Debian 12+ (рекомендуется)
 
 Порты: открытый TCP 443 (основной)
 Память: от 512 МБ ОЗУ
