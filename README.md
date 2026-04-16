@@ -53,6 +53,13 @@ bash
 systemctl restart xray        # перезапуск Xray
 systemctl restart xray-bot    # перезапуск Telegram-бота
 
+## 🩺 Диагностика проблем
+
+Если после установки VPN не подключается, воспользуйтесь встроенным диагностическим скриптом:
+
+```bash
+sudo bash xray_full_test.sh
+
 📋 Системные требования
 ОС: Debian 12 / Ubuntu 22.04+ (рекомендуется)
 
