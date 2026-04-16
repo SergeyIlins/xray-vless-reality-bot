@@ -118,21 +118,34 @@ def remove_client_from_xray(email):
             return True
     raise Exception(f"Inbound '{INBOUND_TAG}' не найден")
 
+
+def get_all_stats():
+    """Получает все счётчики статистики одним запросом."""
+    payload = json_lib.dumps({"reset": False})
+    cmd = ["/usr/local/bin/xray", "api", "statsquery"]
+    out, err, rc = run_command_with_stdin(cmd, input_data=payload, timeout=10)
+    if rc != 0:
+        logger.error(f"Failed to query all stats: {err}")
+        return {}
+    try:
+        data = json_lib.loads(out)
+        stats = {}
+        for item in data.get("stat", []):
+            name = item.get("name", "")
+            value = int(item.get("value", 0))
+            stats[name] = value
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to parse all stats: {e}")
+        return {}
+
 def get_client_stats(email):
-    def query_stat(name):
-        payload = json_lib.dumps({"name": name})
-        cmd = ["/usr/local/bin/xray", "api", "statsquery"]
-        out, err, rc = run_command_with_stdin(cmd, input_data=payload)
-        if rc != 0:
-            return 0
-        try:
-            data = json_lib.loads(out)
-            return data.get("stat", [{}])[0].get("value", 0)
-        except:
-            return 0
-    uplink = query_stat(f"user>>>{email}>>>traffic>>>uplink")
-    downlink = query_stat(f"user>>>{email}>>>traffic>>>downlink")
+    """Извлекает uplink/downlink для email из общего словаря статистики."""
+    stats = get_all_stats()
+    uplink = stats.get(f"user>>>{email}>>>traffic>>>uplink", 0)
+    downlink = stats.get(f"user>>>{email}>>>traffic>>>downlink", 0)
     return uplink, downlink
+
 
 def generate_vless_link(uuid, name):
     base = f"vless://{uuid}@{SERVER_IP}:443"
