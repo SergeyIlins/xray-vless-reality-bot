@@ -30,6 +30,7 @@ DURATION_MAP = {
     "Постоянный": 0
 }
 
+# ---------------------- Вспомогательные функции ----------------------
 def load_clients_db():
     if not os.path.exists(CLIENTS_DB):
         return {}
@@ -178,34 +179,55 @@ def generate_qr_code(data):
     bio.seek(0)
     return bio
 
+def get_main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить клиента", callback_data="add_client")],
+        [InlineKeyboardButton("❌ Удалить клиента", callback_data="del_client")],
+        [InlineKeyboardButton("📋 Список клиентов", callback_data="list_clients")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("🆔 Мой ID", callback_data="my_id")]
+    ])
+
+# ---------------------- Обработчики команд ----------------------
 async def set_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("menu", "Показать главное меню"),
-        BotCommand("id", "Узнать свой Telegram ID")
+        BotCommand("start", "Главное меню"),
+        BotCommand("menu", "Показать меню")
     ])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.message.reply_text("⛔ У вас нет доступа к этому боту.")
         return
-    await update.message.reply_text("Добро пожаловать! Используйте /menu для управления Xray.")
-
-async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    await update.message.reply_text(f"Ваш Telegram ID: `{user_id}`", parse_mode="Markdown")
+    await update.message.reply_text(
+        "Добро пожаловать! Выберите действие:",
+        reply_markup=get_main_menu_keyboard()
+    )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.message.reply_text("⛔ Нет доступа.")
         return
-    keyboard = [
-        [InlineKeyboardButton("➕ Добавить клиента", callback_data="add_client")],
-        [InlineKeyboardButton("❌ Удалить клиента", callback_data="del_client")],
-        [InlineKeyboardButton("📋 Список клиентов", callback_data="list_clients")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
-    ]
-    await update.message.reply_text("Главное меню:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "Главное меню:",
+        reply_markup=get_main_menu_keyboard()
+    )
 
+async def show_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    await query.edit_message_text(
+        f"Ваш Telegram ID: `{user_id}`",
+        parse_mode="Markdown"
+    )
+    # Показываем главное меню новым сообщением
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+# ---------------------- Обработчик инлайн-кнопок ----------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.callback_query.answer("⛔ Нет доступа", show_alert=True)
@@ -222,22 +244,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📅 6 месяцев", callback_data="dur_15552000")],
             [InlineKeyboardButton("📅 12 месяцев", callback_data="dur_31104000")],
             [InlineKeyboardButton("♾️ Постоянный", callback_data="dur_0")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
         ]
         await query.edit_message_text("Выберите срок действия:", reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif data.startswith("dur_"):
         seconds = int(data.split("_")[1])
         context.user_data['duration'] = seconds
         duration_text = next((k for k, v in DURATION_MAP.items() if v == seconds), f"{seconds} сек")
-        await query.edit_message_text(f"Вы выбрали: {duration_text}\nТеперь введите имя клиента (латиница, 3-20 символов, можно - и _):")
+        await query.edit_message_text(
+            f"Вы выбрали: {duration_text}\n"
+            "Введите имя клиента (латиница, 3-20 символов, можно - и _):"
+        )
         context.user_data['awaiting_name'] = True
+
     elif data == "del_client":
-        context.user_data['awaiting_delete'] = True
         await query.edit_message_text("Введите имя клиента (email) для удаления:")
+        context.user_data['awaiting_delete'] = True
+
     elif data == "list_clients":
         db = load_clients_db()
         if not db:
-            await query.edit_message_text("Нет клиентов.")
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
+            await query.edit_message_text("Нет клиентов.", reply_markup=InlineKeyboardMarkup(keyboard))
             return
         msg = "📋 *Список клиентов:*\n\n"
         for email, info in db.items():
@@ -245,11 +274,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = info.get("name", email)
             expire_str = "♾️ постоянный" if expires == 0 else f"⏰ до {datetime.fromtimestamp(expires).strftime('%Y-%m-%d %H:%M')}"
             msg += f"• *{name}* — {expire_str}\n"
-        await query.edit_message_text(msg, parse_mode="Markdown")
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif data == "stats":
         db = load_clients_db()
         if not db:
-            await query.edit_message_text("Нет клиентов.")
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
+            await query.edit_message_text("Нет клиентов.", reply_markup=InlineKeyboardMarkup(keyboard))
             return
         msg = "📊 *Статистика использования:*\n\n"
         for email, info in db.items():
@@ -257,25 +289,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             up, down = get_client_stats(email)
             total_mb = (up + down) / (1024 * 1024)
             msg += f"• *{name}*: {total_mb:.2f} МБ\n"
-        await query.edit_message_text(msg, parse_mode="Markdown")
-    elif data == "back":
-        keyboard = [
-            [InlineKeyboardButton("➕ Добавить клиента", callback_data="add_client")],
-            [InlineKeyboardButton("❌ Удалить клиента", callback_data="del_client")],
-            [InlineKeyboardButton("📋 Список клиентов", callback_data="list_clients")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
-        ]
-        await query.edit_message_text("Главное меню:", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
+    elif data == "my_id":
+        await show_my_id(update, context)
+
+    elif data == "back_to_menu":
+        await query.edit_message_text("Главное меню:", reply_markup=get_main_menu_keyboard())
+
+# ---------------------- Обработчик текстовых сообщений ----------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.message.reply_text("⛔ Нет доступа.")
         return
     text = update.message.text.strip()
+
+    # Добавление клиента (ожидание имени)
     if context.user_data.get('awaiting_name'):
         name = text
         if not re.match(r'^[a-zA-Z0-9_-]{3,20}$', name):
-            await update.message.reply_text("Некорректное имя. Разрешены буквы, цифры, - и _. Длина 3-20. Попробуйте снова /menu")
+            await update.message.reply_text(
+                "Некорректное имя. Разрешены буквы, цифры, - и _. Длина 3-20. Попробуйте снова /menu"
+            )
             context.user_data['awaiting_name'] = False
             return
         duration = context.user_data.get('duration', 0)
@@ -294,14 +330,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_clients_db(db)
             link = generate_vless_link(uuid, name)
             qr_img = generate_qr_code(link)
-            
+
             # Генерируем .conf файл
             conf_content = generate_client_conf(uuid, name)
             logger.info(f"Generated .conf file for {name}, size: {len(conf_content)} bytes")
             conf_bytes = BytesIO(conf_content.encode('utf-8'))
             conf_bytes.seek(0)
-            
-            # Отправка
+
+            # Отправка данных клиента
             await update.message.reply_photo(photo=qr_img, caption=f"QR-код для {name}")
             await update.message.reply_document(
                 document=conf_bytes,
@@ -318,8 +354,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error adding client: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
-        context.user_data['awaiting_name'] = False
-        context.user_data.pop('duration', None)
+        finally:
+            context.user_data['awaiting_name'] = False
+            context.user_data.pop('duration', None)
+            # Показываем главное меню
+            await update.message.reply_text("Главное меню:", reply_markup=get_main_menu_keyboard())
+
+    # Удаление клиента (ожидание email)
     elif context.user_data.get('awaiting_delete'):
         email = text
         try:
@@ -332,15 +373,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error removing client: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
-        context.user_data['awaiting_delete'] = False
+        finally:
+            context.user_data['awaiting_delete'] = False
+            # Показываем главное меню
+            await update.message.reply_text("Главное меню:", reply_markup=get_main_menu_keyboard())
+
     else:
         await update.message.reply_text("Используйте /menu для управления.")
 
+# ---------------------- Точка входа ----------------------
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("id", show_id))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.post_init = set_commands
