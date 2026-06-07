@@ -4,9 +4,10 @@ SERVER_IP = "YOUR_SERVER_IP"         # IP или домен сервера
 PUBLIC_KEY = "PUBLIC_KEY_FROM_XRAY"  # Публичный ключ из вывода xray x25519
 SHORT_ID = "YOUR_SHORT_ID"           # Hex-строка из 16 символов
 SNI = "www.microsoft.com"            # Домен для маскировки
+
 # === Hysteria2 ===
 HYSTERIA_PORT = 8443
-HYSTERIA_OBFS = "salamander"      # обфускация для маскировки QUIC
+HYSTERIA_OBFS = "salamander"
 
 # === SplitHTTP ===
 SPLIT_PORT = 8081
