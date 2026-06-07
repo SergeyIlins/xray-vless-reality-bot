@@ -5,30 +5,29 @@ import json as json_lib
 import re
 import os
 import shutil
+import random
+import ipaddress
 from datetime import datetime, timedelta
-import qrcode
 from io import BytesIO
+import qrcode
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 from config import (
     TELEGRAM_BOT_TOKEN, ALLOWED_USERS, SERVER_IP, PUBLIC_KEY, SHORT_ID, SNI,
-    HYSTERIA_PORT, HYSTERIA_OBFS, SPLIT_PORT, SPLIT_PATH
+    SPLIT_PORT, SPLIT_PATH,
+    WG_SERVER_IP, WG_PORT, WG_SERVER_PUBKEY, WG_SERVER_PRIVKEY, WG_SUBNET, SERVER_WG_IP
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Теги inbound-секций в config.json
-INBOUND_TAGS = {
-    "vless": "proxy",
-    "hysteria2": "hysteria",
-    "split": "split"
-}
-
+INBOUND_VLESS = "proxy"
+INBOUND_SPLIT = "split"
 CONFIG_PATH = "/usr/local/etc/xray/config.json"
 CONFIG_BACKUP = "/usr/local/etc/xray/config.json.bak"
 CLIENTS_DB = "/opt/xray-bot/clients.json"
+WG_CONFIG = "/etc/amnezia/amneziawg.conf"
 
 DURATION_MAP = {
     "24 часа": 86400,
@@ -39,7 +38,6 @@ DURATION_MAP = {
     "Постоянный": 0
 }
 
-# ---------------------- Вспомогательные функции ----------------------
 def load_clients_db():
     if not os.path.exists(CLIENTS_DB):
         return {}
@@ -57,21 +55,6 @@ def is_allowed(update: Update) -> bool:
 def run_command(cmd_list):
     result = subprocess.run(cmd_list, capture_output=True, text=True)
     return result.stdout.strip(), result.stderr.strip(), result.returncode
-
-def run_command_with_stdin(cmd_list, input_data=None, timeout=10):
-    try:
-        result = subprocess.run(
-            cmd_list,
-            input=input_data,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        return result.stdout.strip(), result.stderr.strip(), result.returncode
-    except subprocess.TimeoutExpired:
-        return "", "Command timed out", -1
-    except Exception as e:
-        return "", str(e), -1
 
 def load_xray_config():
     with open(CONFIG_PATH, 'r') as f:
@@ -94,38 +77,74 @@ def generate_uuid():
         raise Exception(f"Ошибка генерации UUID: {err}")
     return out
 
-def add_client_to_xray(email, uuid_or_password, protocol='vless'):
+# ----- AmneziaWG helpers -----
+def load_wg_config():
+    with open(WG_CONFIG, 'r') as f:
+        return f.read()
+
+def save_wg_config(content):
+    with open(WG_CONFIG, 'w') as f:
+        f.write(content)
+
+def reload_awg():
+    subprocess.run(["systemctl", "restart", "awg-quick@amneziawg"], capture_output=True)
+
+def add_peer_to_awg(public_key, allowed_ip):
+    # Добавляем пир в конец файла
+    with open(WG_CONFIG, "a") as f:
+        f.write(f"\n[Peer]\nPublicKey = {public_key}\nAllowedIPs = {allowed_ip}\n")
+    reload_awg()
+
+def remove_peer_from_awg(public_key):
+    # Удаляем блок пира
+    lines = load_wg_config().splitlines()
+    new_lines = []
+    skip = False
+    for line in lines:
+        if line.startswith("[Peer]") and f"PublicKey = {public_key}" in lines[lines.index(line)+1]:
+            skip = True
+        elif line.startswith("[") and skip:
+            skip = False
+            new_lines.append(line)
+        elif not skip:
+            new_lines.append(line)
+    save_wg_config("\n".join(new_lines))
+    reload_awg()
+
+def generate_awg_client_conf(name, client_privkey, client_ip):
+    return f"""[Interface]
+PrivateKey = {client_privkey}
+Address = {client_ip}/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = {WG_SERVER_PUBKEY}
+Endpoint = {WG_SERVER_IP}:{WG_PORT}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25"""
+
+# ----- Управление Xray клиентами -----
+def add_client_to_xray(email, uuid, protocol='vless'):
+    tag = INBOUND_VLESS if protocol == 'vless' else INBOUND_SPLIT
     config = load_xray_config()
-    tag = INBOUND_TAGS[protocol]
     for inbound in config['inbounds']:
         if inbound.get('tag') == tag:
             clients = inbound['settings']['clients']
             for c in clients:
                 if c.get('email') == email:
                     raise Exception(f"Клиент с email {email} уже существует")
-            if protocol in ('vless', 'split'):
-                clients.append({
-                    "email": email,
-                    "id": uuid_or_password,
-                    "level": 0
-                })
-                if protocol == 'vless':
-                    clients[-1]["flow"] = "xtls-rprx-vision"
-            else:  # hysteria2
-                clients.append({
-                    "email": email,
-                    "password": uuid_or_password,
-                    "level": 0
-                })
+            entry = {"email": email, "id": uuid, "level": 0}
+            if protocol == 'vless':
+                entry["flow"] = "xtls-rprx-vision"
+            clients.append(entry)
             save_xray_config(config)
             reload_xray()
             return True
-    raise Exception(f"Inbound с тегом {tag} не найден в конфиге")
+    raise Exception(f"Inbound с тегом {tag} не найден")
 
 def remove_client_from_xray(email, protocol=None):
     config = load_xray_config()
-    # Если протокол не указан, пытаемся удалить из всех inbound
-    tags = [INBOUND_TAGS[protocol]] if protocol else INBOUND_TAGS.values()
+    tags = [INBOUND_VLESS] if protocol == 'vless' else [INBOUND_SPLIT] if protocol == 'split' else [INBOUND_VLESS, INBOUND_SPLIT]
     deleted = False
     for tag in tags:
         for inbound in config['inbounds']:
@@ -136,94 +155,39 @@ def remove_client_from_xray(email, protocol=None):
                     inbound['settings']['clients'] = new_clients
                     deleted = True
     if not deleted:
-        raise Exception(f"Клиент с email {email} не найден ни в одном inbound")
+        raise Exception(f"Клиент с email {email} не найден")
     save_xray_config(config)
     reload_xray()
     return True
 
-def get_all_stats():
-    payload = json_lib.dumps({"reset": False})
-    cmd = ["/usr/local/bin/xray", "api", "statsquery"]
-    out, err, rc = run_command_with_stdin(cmd, input_data=payload, timeout=10)
-    if rc != 0:
-        logger.error(f"Failed to query all stats: {err}")
-        return {}
-    try:
-        data = json_lib.loads(out)
-        stats = {}
-        for item in data.get("stat", []):
-            name = item.get("name", "")
-            value = int(item.get("value", 0))
-            stats[name] = value
-        return stats
-    except Exception as e:
-        logger.error(f"Failed to parse all stats: {e}")
-        return {}
-
-def get_client_stats(email):
-    stats = get_all_stats()
-    uplink = stats.get(f"user>>>{email}>>>traffic>>>uplink", 0)
-    downlink = stats.get(f"user>>>{email}>>>traffic>>>downlink", 0)
-    return uplink, downlink
-
-# ---------- Генерация ссылок и конфигов ----------
+# ----- Генерация ссылок и конфигов -----
 def generate_vless_link(uuid, name):
     base = f"vless://{uuid}@{SERVER_IP}:443"
     params = f"security=reality&encryption=none&pbk={PUBLIC_KEY}&sni={SNI}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sid={SHORT_ID}"
     return f"{base}?{params}#{name}"
 
-def generate_hysteria_link(password, name):
-    return f"hysteria2://{password}@{SERVER_IP}:{HYSTERIA_PORT}?sni={SNI}&insecure=1&obfs={HYSTERIA_OBFS}&alpn=h3#hy-{name}"
-
 def generate_split_link(uuid, name):
     return f"vless://{uuid}@{SERVER_IP}:{SPLIT_PORT}?type=xhttp&path={SPLIT_PATH}&security=none#sp-{name}"
 
-def generate_client_conf(uuid_or_password, name, protocol='vless'):
+def generate_client_conf(uuid_or_data, name, protocol='vless'):
     if protocol == 'vless':
         conf = {
             "outbounds": [{
                 "protocol": "vless",
                 "settings": {
                     "vnext": [{
-                        "address": SERVER_IP,
-                        "port": 443,
-                        "users": [{
-                            "id": uuid_or_password,
-                            "flow": "xtls-rprx-vision",
-                            "encryption": "none"
-                        }]
+                        "address": SERVER_IP, "port": 443,
+                        "users": [{"id": uuid_or_data, "flow": "xtls-rprx-vision", "encryption": "none"}]
                     }]
                 },
                 "streamSettings": {
-                    "network": "tcp",
-                    "security": "reality",
+                    "network": "tcp", "security": "reality",
                     "realitySettings": {
-                        "serverName": SNI,
-                        "fingerprint": "chrome",
-                        "publicKey": PUBLIC_KEY,
-                        "shortId": SHORT_ID
+                        "serverName": SNI, "fingerprint": "chrome",
+                        "publicKey": PUBLIC_KEY, "shortId": SHORT_ID
                     }
                 },
                 "tag": "proxy"
-            }]
-        }
-    elif protocol == 'hysteria2':
-        conf = {
-            "outbounds": [{
-                "protocol": "hysteria2",
-                "settings": {
-                    "server": f"{SERVER_IP}:{HYSTERIA_PORT}",
-                    "password": uuid_or_password,
-                    "obfs": {
-                        "type": HYSTERIA_OBFS,
-                        "sni": SNI
-                    },
-                    "tls": {
-                        "insecure": True,
-                        "alpn": ["h3"]
-                    }
-                },
-                "tag": "hysteria"
             }]
         }
     elif protocol == 'split':
@@ -232,24 +196,16 @@ def generate_client_conf(uuid_or_password, name, protocol='vless'):
                 "protocol": "vless",
                 "settings": {
                     "vnext": [{
-                        "address": SERVER_IP,
-                        "port": SPLIT_PORT,
-                        "users": [{
-                            "id": uuid_or_password,
-                            "encryption": "none"
-                        }]
+                        "address": SERVER_IP, "port": SPLIT_PORT,
+                        "users": [{"id": uuid_or_data, "encryption": "none"}]
                     }]
                 },
-                "streamSettings": {
-                    "network": "xhttp",
-                    "xhttpSettings": {
-                        "mode": "auto",
-                        "path": SPLIT_PATH
-                    }
-                },
+                "streamSettings": {"network": "xhttp", "xhttpSettings": {"mode": "auto", "path": SPLIT_PATH}},
                 "tag": "split"
             }]
         }
+    elif protocol == 'amneziawg':
+        return generate_awg_client_conf(name, uuid_or_data[0], uuid_or_data[1])
     return json_lib.dumps(conf, indent=2)
 
 def generate_qr_code(data):
@@ -271,52 +227,22 @@ def get_main_menu_keyboard():
         [InlineKeyboardButton("🆔 Мой ID", callback_data="my_id")]
     ])
 
-# ---------------------- Обработчики команд ----------------------
+# Обработчики команд
 async def set_commands(app):
-    await app.bot.set_my_commands([
-        BotCommand("start", "Главное меню"),
-        BotCommand("menu", "Показать меню")
-    ])
+    await app.bot.set_my_commands([BotCommand("start", "Главное меню"), BotCommand("menu", "Показать меню")])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("⛔ У вас нет доступа к этому боту.")
-        return
-    await update.message.reply_text(
-        "Добро пожаловать! Выберите действие:",
-        reply_markup=get_main_menu_keyboard()
-    )
+    if not is_allowed(update): return
+    await update.message.reply_text("Добро пожаловать! Выберите действие:", reply_markup=get_main_menu_keyboard())
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("⛔ Нет доступа.")
-        return
-    await update.message.reply_text(
-        "Главное меню:",
-        reply_markup=get_main_menu_keyboard()
-    )
+    await start(update, context)
 
-async def show_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    await query.edit_message_text(
-        f"Ваш Telegram ID: `{user_id}`",
-        parse_mode="Markdown"
-    )
-    await query.message.reply_text(
-        "Главное меню:",
-        reply_markup=get_main_menu_keyboard()
-    )
-
-# ---------------------- Обработчик инлайн-кнопок ----------------------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.callback_query.answer("⛔ Нет доступа", show_alert=True)
-        return
     query = update.callback_query
     await query.answer()
     data = query.data
+    if not is_allowed(update): return
 
     if data == "add_client":
         keyboard = [
@@ -328,246 +254,138 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("♾️ Постоянный", callback_data="dur_0")],
             [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
         ]
-        await query.edit_message_text("Выберите срок действия:", reply_markup=InlineKeyboardMarkup(keyboard))
-
+        await query.edit_message_text("Выберите срок:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data.startswith("dur_"):
         seconds = int(data.split("_")[1])
         context.user_data['duration'] = seconds
-        duration_text = next((k for k, v in DURATION_MAP.items() if v == seconds), f"{seconds} сек")
         keyboard = [
             [InlineKeyboardButton("🚀 Стандарт (Xray REALITY)", callback_data="proto_vless")],
-            [InlineKeyboardButton("⚡ Турбо (Xray + Hysteria2)", callback_data="proto_both_hysteria")],
+            [InlineKeyboardButton("⚡ АмнезияWG (обход DPI)", callback_data="proto_awg")],
             [InlineKeyboardButton("🛡️ Максимальная защита (Xray + SplitHTTP)", callback_data="proto_both_split")],
             [InlineKeyboardButton("◀️ Назад", callback_data="add_client")]
         ]
-        await query.edit_message_text(
-            f"Вы выбрали срок: {duration_text}\nТеперь выберите тип подключения:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        duration_text = next((k for k, v in DURATION_MAP.items() if v == seconds), f"{seconds} сек")
+        await query.edit_message_text(f"Вы выбрали срок: {duration_text}\nВыберите тип:", reply_markup=InlineKeyboardMarkup(keyboard))
         context.user_data['awaiting_protocol'] = True
-
     elif data.startswith("proto_"):
         proto = data.split("_", 1)[1]
         context.user_data['protocol'] = proto
-        await query.edit_message_text(
-            "Введите имя клиента (латиница, 3-20 символов, можно - и _):"
-        )
+        await query.edit_message_text("Введите имя клиента (латиница, 3-20 символов, можно - и _):")
         context.user_data['awaiting_name'] = True
-
     elif data == "del_client":
-        await query.edit_message_text("Введите имя клиента (email) для удаления:")
         context.user_data['awaiting_delete'] = True
-
+        await query.edit_message_text("Введите имя клиента для удаления:")
     elif data == "list_clients":
         db = load_clients_db()
         if not db:
-            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
-            await query.edit_message_text("Нет клиентов.", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("Нет клиентов.")
             return
-        msg = "📋 *Список клиентов:*\n\n"
+        msg = "📋 Список клиентов:\n\n"
         for email, info in db.items():
+            name = info.get("name", email)
             expires = info.get("expires", 0)
-            name = info.get("name", email)
-            proto = info.get("protocol", "vless")
-            expire_str = "♾️ постоянный" if expires == 0 else f"⏰ до {datetime.fromtimestamp(expires).strftime('%Y-%m-%d %H:%M')}"
-            msg += f"• *{name}* ({proto}) — {expire_str}\n"
-        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
+            expire_str = "♾️ постоянный" if expires == 0 else datetime.fromtimestamp(expires).strftime('%Y-%m-%d %H:%M')
+            msg += f"• {name} ({info.get('protocol','vless')}) — {expire_str}\n"
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]))
     elif data == "stats":
-        db = load_clients_db()
-        if not db:
-            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
-            await query.edit_message_text("Нет клиентов.", reply_markup=InlineKeyboardMarkup(keyboard))
-            return
-        msg = "📊 *Статистика использования:*\n\n"
-        for email, info in db.items():
-            name = info.get("name", email)
-            up, down = get_client_stats(email)
-            total_mb = (up + down) / (1024 * 1024)
-            msg += f"• *{name}*: {total_mb:.2f} МБ\n"
-        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
+        # можно добавить позже
+        await query.edit_message_text("Статистика временно недоступна")
     elif data == "my_id":
-        await show_my_id(update, context)
-
+        await query.edit_message_text(f"Ваш ID: {update.effective_user.id}", parse_mode="Markdown")
+        await query.message.reply_text("Главное меню:", reply_markup=get_main_menu_keyboard())
     elif data == "back_to_menu":
         await query.edit_message_text("Главное меню:", reply_markup=get_main_menu_keyboard())
 
-# ---------------------- Обработчик текстовых сообщений ----------------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update):
-        await update.message.reply_text("⛔ Нет доступа.")
-        return
+    if not is_allowed(update): return
     text = update.message.text.strip()
-
     if context.user_data.get('awaiting_name'):
         name = text
         if not re.match(r'^[a-zA-Z0-9_-]{3,20}$', name):
-            await update.message.reply_text(
-                "Некорректное имя. Разрешены буквы, цифры, - и _. Длина 3-20. Попробуйте снова /menu"
-            )
-            context.user_data['awaiting_name'] = False
+            await update.message.reply_text("Некорректное имя.")
             return
         duration = context.user_data.get('duration', 0)
-        protocol = context.user_data.get('protocol', 'vless')
+        proto = context.user_data.get('protocol', 'vless')
         try:
-            # Генерация ключей в зависимости от протокола
-            if protocol == 'vless':
+            expire_ts = 0 if duration == 0 else int((datetime.now() + timedelta(seconds=duration)).timestamp())
+            if proto == 'vless':
                 uuid = generate_uuid()
                 email = name
                 add_client_to_xray(email, uuid, 'vless')
                 db = load_clients_db()
-                expire_ts = 0 if duration == 0 else int((datetime.now() + timedelta(seconds=duration)).timestamp())
-                db[email] = {
-                    "name": name,
-                    "uuid": uuid,
-                    "expires": expire_ts,
-                    "protocol": "vless",
-                    "created": int(datetime.now().timestamp())
-                }
+                db[email] = {"name": name, "uuid": uuid, "expires": expire_ts, "protocol": "vless"}
                 save_clients_db(db)
                 link = generate_vless_link(uuid, name)
-                qr_img = generate_qr_code(link)
-                conf_content = generate_client_conf(uuid, name, 'vless')
-                await update.message.reply_photo(photo=qr_img, caption=f"QR-код для {name} (VLESS)")
-                await update.message.reply_document(
-                    document=BytesIO(conf_content.encode('utf-8')),
-                    filename=f"{name}_vless.conf",
-                    caption=f"Конфигурация VLESS для {name}"
-                )
-                await update.message.reply_text(
-                    f"✅ Клиент *{name}* (VLESS) добавлен.\n\n"
-                    f"*Ссылка:*\n`{link}`\n\n"
-                    f"*UUID:* `{uuid}`\n"
-                    f"*Срок:* {DURATION_MAP.get(duration, 'Постоянный')}",
-                    parse_mode="Markdown"
-                )
-
-            elif protocol == 'both_hysteria':
-                # VLESS
-                uuid_vless = generate_uuid()
-                email_vless = f"{name}_v"
-                add_client_to_xray(email_vless, uuid_vless, 'vless')
-                # Hysteria2
-                password_hy = os.urandom(16).hex()  # пароль как строка
-                email_hy = f"{name}_h"
-                add_client_to_xray(email_hy, password_hy, 'hysteria2')
+                qr = generate_qr_code(link)
+                conf = generate_client_conf(uuid, name, 'vless')
+                await update.message.reply_photo(photo=qr, caption=f"QR для {name}")
+                await update.message.reply_document(document=BytesIO(conf.encode()), filename=f"{name}_vless.conf")
+                await update.message.reply_text(f"✅ Клиент {name} (VLESS) добавлен.\n{link}")
+            elif proto == 'awg':
+                client_privkey = subprocess.run(["awg", "genkey"], capture_output=True, text=True).stdout.strip()
+                client_pubkey = subprocess.run(["awg", "pubkey"], input=client_privkey, capture_output=True, text=True).stdout.strip()
+                # Назначаем IP
+                subnet = ipaddress.ip_network(WG_SUBNET)
+                existing_ips = [int(ipaddress.IPv4Address(line.split('=')[1].strip().split('/')[0])) for line in load_wg_config().splitlines() if line.startswith("AllowedIPs")]
+                used = set(existing_ips)
+                for i in range(2, 254):
+                    if int(subnet[i]) not in used:
+                        client_ip = str(subnet[i])
+                        break
+                else:
+                    raise Exception("Нет свободных IP в подсети")
+                email = name
+                add_peer_to_awg(client_pubkey, client_ip)
                 db = load_clients_db()
-                expire_ts = 0 if duration == 0 else int((datetime.now() + timedelta(seconds=duration)).timestamp())
-                db[email_vless] = {
-                    "name": f"{name} (VLESS)",
-                    "uuid": uuid_vless,
-                    "expires": expire_ts,
-                    "protocol": "vless",
-                    "created": int(datetime.now().timestamp())
-                }
-                db[email_hy] = {
-                    "name": f"{name} (Hysteria2)",
-                    "uuid": password_hy,
-                    "expires": expire_ts,
-                    "protocol": "hysteria2",
-                    "created": int(datetime.now().timestamp())
-                }
+                db[email] = {"name": name, "uuid": client_pubkey, "expires": expire_ts, "protocol": "awg", "privkey": client_privkey}
                 save_clients_db(db)
-                # Отправка VLESS
-                link_vless = generate_vless_link(uuid_vless, f"{name}_vless")
-                qr_vless = generate_qr_code(link_vless)
-                conf_vless = generate_client_conf(uuid_vless, f"{name}_vless", 'vless')
-                await update.message.reply_photo(photo=qr_vless, caption=f"QR-код для {name} (VLESS)")
-                await update.message.reply_document(
-                    document=BytesIO(conf_vless.encode('utf-8')),
-                    filename=f"{name}_vless.conf",
-                    caption="Конфигурация VLESS"
-                )
-                # Отправка Hysteria2
-                link_hy = generate_hysteria_link(password_hy, f"{name}_hysteria")
-                qr_hy = generate_qr_code(link_hy)
-                conf_hy = generate_client_conf(password_hy, f"{name}_hysteria", 'hysteria2')
-                await update.message.reply_photo(photo=qr_hy, caption=f"QR-код для {name} (Hysteria2)")
-                await update.message.reply_document(
-                    document=BytesIO(conf_hy.encode('utf-8')),
-                    filename=f"{name}_hysteria.conf",
-                    caption="Конфигурация Hysteria2"
-                )
-                await update.message.reply_text(
-                    f"✅ Клиент *{name}* (Xray + Hysteria2) добавлен.\n"
-                    f"Срок: {DURATION_MAP.get(duration, 'Постоянный')}",
-                    parse_mode="Markdown"
-                )
-
-            elif protocol == 'both_split':
-                # VLESS
-                uuid_vless = generate_uuid()
-                email_vless = f"{name}_v"
-                add_client_to_xray(email_vless, uuid_vless, 'vless')
-                # SplitHTTP
-                uuid_split = generate_uuid()
-                email_split = f"{name}_s"
-                add_client_to_xray(email_split, uuid_split, 'split')
+                conf = generate_client_conf((client_privkey, client_ip), name, 'amneziawg')
+                qr = generate_qr_code(conf)
+                await update.message.reply_photo(photo=qr, caption=f"QR для {name} (AmneziaWG)")
+                await update.message.reply_document(document=BytesIO(conf.encode()), filename=f"{name}_awg.conf")
+                await update.message.reply_text(f"✅ Клиент {name} (AmneziaWG) добавлен.")
+            elif proto == 'both_split':
+                uuid = generate_uuid()
+                email_v = f"{name}_v"
+                add_client_to_xray(email_v, uuid, 'vless')
+                uuid_s = generate_uuid()
+                email_s = f"{name}_s"
+                add_client_to_xray(email_s, uuid_s, 'split')
                 db = load_clients_db()
-                expire_ts = 0 if duration == 0 else int((datetime.now() + timedelta(seconds=duration)).timestamp())
-                db[email_vless] = {
-                    "name": f"{name} (VLESS)",
-                    "uuid": uuid_vless,
-                    "expires": expire_ts,
-                    "protocol": "vless",
-                    "created": int(datetime.now().timestamp())
-                }
-                db[email_split] = {
-                    "name": f"{name} (SplitHTTP)",
-                    "uuid": uuid_split,
-                    "expires": expire_ts,
-                    "protocol": "split",
-                    "created": int(datetime.now().timestamp())
-                }
+                db[email_v] = {"name": f"{name} (VLESS)", "uuid": uuid, "expires": expire_ts, "protocol": "vless"}
+                db[email_s] = {"name": f"{name} (Split)", "uuid": uuid_s, "expires": expire_ts, "protocol": "split"}
                 save_clients_db(db)
-                # Отправка VLESS
-                link_vless = generate_vless_link(uuid_vless, f"{name}_vless")
-                qr_vless = generate_qr_code(link_vless)
-                conf_vless = generate_client_conf(uuid_vless, f"{name}_vless", 'vless')
-                await update.message.reply_photo(photo=qr_vless, caption=f"QR-код для {name} (VLESS)")
-                await update.message.reply_document(
-                    document=BytesIO(conf_vless.encode('utf-8')),
-                    filename=f"{name}_vless.conf",
-                    caption="Конфигурация VLESS"
-                )
-                # Отправка SplitHTTP
-                link_split = generate_split_link(uuid_split, f"{name}_split")
-                qr_split = generate_qr_code(link_split)
-                conf_split = generate_client_conf(uuid_split, f"{name}_split", 'split')
-                await update.message.reply_photo(photo=qr_split, caption=f"QR-код для {name} (SplitHTTP)")
-                await update.message.reply_document(
-                    document=BytesIO(conf_split.encode('utf-8')),
-                    filename=f"{name}_split.conf",
-                    caption="Конфигурация SplitHTTP"
-                )
-                await update.message.reply_text(
-                    f"✅ Клиент *{name}* (Xray + SplitHTTP) добавлен.\n"
-                    f"Срок: {DURATION_MAP.get(duration, 'Постоянный')}",
-                    parse_mode="Markdown"
-                )
-            else:
-                raise Exception("Неизвестный протокол")
+                link_v = generate_vless_link(uuid, f"{name}_v")
+                qr_v = generate_qr_code(link_v)
+                conf_v = generate_client_conf(uuid, f"{name}_v", 'vless')
+                await update.message.reply_photo(photo=qr_v, caption=f"QR VLESS {name}")
+                await update.message.reply_document(document=BytesIO(conf_v.encode()), filename=f"{name}_vless.conf")
+                link_s = generate_split_link(uuid_s, f"{name}_s")
+                qr_s = generate_qr_code(link_s)
+                conf_s = generate_client_conf(uuid_s, f"{name}_s", 'split')
+                await update.message.reply_photo(photo=qr_s, caption=f"QR SplitHTTP {name}")
+                await update.message.reply_document(document=BytesIO(conf_s.encode()), filename=f"{name}_split.conf")
+                await update.message.reply_text(f"✅ Клиент {name} (VLESS+SplitHTTP) добавлен.")
         except Exception as e:
             logger.error(f"Error adding client: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
         finally:
             context.user_data.clear()
             await update.message.reply_text("Главное меню:", reply_markup=get_main_menu_keyboard())
-
     elif context.user_data.get('awaiting_delete'):
         email = text
         try:
-            remove_client_from_xray(email)  # удалит из всех inbound
             db = load_clients_db()
             if email in db:
+                proto = db[email].get('protocol', 'vless')
+                if proto == 'awg':
+                    remove_peer_from_awg(db[email]['uuid'])
+                else:
+                    remove_client_from_xray(email, proto)
                 del db[email]
                 save_clients_db(db)
             await update.message.reply_text(f"🗑️ Клиент {email} удалён.")
         except Exception as e:
-            logger.error(f"Error removing client: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
         finally:
             context.user_data['awaiting_delete'] = False
@@ -575,7 +393,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Используйте /menu для управления.")
 
-# ---------------------- Точка входа ----------------------
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
