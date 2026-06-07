@@ -56,6 +56,43 @@
       }
     },
     {
+      "listen": "0.0.0.0",
+      "port": 8443,
+      "protocol": "hysteria2",
+      "tag": "hysteria",
+      "settings": {
+        "clients": []
+      },
+      "streamSettings": {
+        "security": "tls",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "/etc/xray/cert.pem",
+              "keyFile": "/etc/xray/key.pem"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "listen": "0.0.0.0",
+      "port": 8081,
+      "protocol": "vless",
+      "tag": "split",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "mode": "auto",
+          "path": "/stream"
+        }
+      }
+    },
+    {
       "listen": "127.0.0.1",
       "port": 8080,
       "protocol": "dokodemo-door",
