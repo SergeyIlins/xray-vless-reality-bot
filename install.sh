@@ -1,5 +1,5 @@
 #!/bin/bash
-# Xray VLESS+REALITY + Telegram Bot Installer
+# Xray VLESS+REALITY + Telegram Bot Installer (multi-protocol)
 # Запуск: sudo bash install.sh
 
 set -e
@@ -20,7 +20,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # --- 1. Установка зависимостей ---
 echo -e "${YELLOW}[1/10] Установка пакетов...${NC}"
 apt update
-apt install -y curl wget unzip git jq python3 python3-pip python3-venv qrencode ufw
+apt install -y curl wget unzip git jq python3 python3-pip python3-venv qrencode ufw openssl
 
 # --- 2. Установка Xray ---
 echo -e "${YELLOW}[2/10] Установка Xray...${NC}"
@@ -32,9 +32,7 @@ fi
 
 # --- 3. Генерация ключей ---
 echo -e "${YELLOW}[3/10] Генерация ключей REALITY...${NC}"
-# Сохраняем вывод в переменную
 XRAY_KEYS_OUTPUT=$(xray x25519)
-# Извлекаем ключи (учитываем разные форматы)
 PRIVATE_KEY=$(echo "$XRAY_KEYS_OUTPUT" | grep -E 'Private[ ]?Key:' | awk '{print $NF}')
 PUBLIC_KEY=$(echo "$XRAY_KEYS_OUTPUT" | grep -E 'Public[ ]?Key:|Password[ ]?\(PublicKey\):' | awk '{print $NF}')
 SHORT_ID=$(openssl rand -hex 8)
@@ -48,8 +46,16 @@ echo "Приватный ключ: $PRIVATE_KEY"
 echo "Публичный ключ: $PUBLIC_KEY"
 echo "ShortId: $SHORT_ID"
 
-# --- 4. Создание конфига Xray ---
-echo -e "${YELLOW}[4/10] Создание config.json...${NC}"
+# --- 4. Генерация самоподписанного сертификата для Hysteria2 ---
+echo -e "${YELLOW}[4/10] Создание сертификата для Hysteria2...${NC}"
+mkdir -p /etc/xray
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /etc/xray/key.pem -out /etc/xray/cert.pem \
+  -subj "/CN=www.microsoft.com"
+chmod 600 /etc/xray/key.pem /etc/xray/cert.pem
+
+# --- 5. Создание конфига Xray ---
+echo -e "${YELLOW}[5/10] Создание config.json...${NC}"
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 cp "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null || true
 cp "$SCRIPT_DIR/config.json.example" "$CONFIG_FILE"
@@ -57,8 +63,8 @@ sed -i "s/PRIVATE_KEY_PLACEHOLDER/$PRIVATE_KEY/g" "$CONFIG_FILE"
 sed -i "s/SHORT_ID_PLACEHOLDER/$SHORT_ID/g" "$CONFIG_FILE"
 chmod 644 "$CONFIG_FILE"
 
-# --- 5. Проверка и запуск Xray ---
-echo -e "${YELLOW}[5/10] Проверка конфигурации Xray...${NC}"
+# --- 6. Проверка и запуск Xray ---
+echo -e "${YELLOW}[6/10] Проверка конфигурации Xray...${NC}"
 if ! xray -test -config "$CONFIG_FILE"; then
     echo -e "${RED}Ошибка в конфигурации Xray!${NC}"
     exit 1
@@ -74,15 +80,15 @@ else
     exit 1
 fi
 
-# --- 6. Настройка NAT ---
-echo -e "${YELLOW}[6/10] Настройка NAT...${NC}"
+# --- 7. Настройка NAT ---
+echo -e "${YELLOW}[7/10] Настройка NAT...${NC}"
 IFACE=$(ip route | grep default | awk '{print $5}')
 iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
 apt install -y iptables-persistent
 netfilter-persistent save
 
-# --- 7. Окружение для бота ---
-echo -e "${YELLOW}[7/10] Установка Python-окружения...${NC}"
+# --- 8. Окружение для бота ---
+echo -e "${YELLOW}[8/10] Установка Python-окружения...${NC}"
 BOT_DIR="/opt/xray-bot"
 mkdir -p "$BOT_DIR"
 cp "$SCRIPT_DIR/bot.py" "$BOT_DIR/"
@@ -110,9 +116,13 @@ sed -i "s/^ALLOWED_USERS = .*/ALLOWED_USERS = {$ADMIN_ID}/" config.py
 sed -i "s/^SERVER_IP = .*/SERVER_IP = \"$SERVER_IP\"/" config.py
 sed -i "s/^PUBLIC_KEY = .*/PUBLIC_KEY = \"$PUBLIC_KEY\"/" config.py
 sed -i "s/^SHORT_ID = .*/SHORT_ID = \"$SHORT_ID\"/" config.py
+sed -i "s/^HYSTERIA_PORT = .*/HYSTERIA_PORT = 8443/" config.py
+sed -i "s/^HYSTERIA_OBFS = .*/HYSTERIA_OBFS = \"salamander\"/" config.py
+sed -i "s/^SPLIT_PORT = .*/SPLIT_PORT = 8081/" config.py
+sed -i "s|^SPLIT_PATH = .*|SPLIT_PATH = \"/stream\"|" config.py
 
-# --- 8. Установка сервисов ---
-echo -e "${YELLOW}[8/10] Установка systemd-сервисов...${NC}"
+# --- 9. Установка сервисов ---
+echo -e "${YELLOW}[9/10] Установка systemd-сервисов...${NC}"
 cp "$SCRIPT_DIR/xray-bot.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/xray-cleanup.service" /etc/systemd/system/
 cp "$SCRIPT_DIR/xray-cleanup.timer" /etc/systemd/system/
@@ -130,20 +140,28 @@ else
     echo -e "${RED}Бот не запустился! Проверьте journalctl -u xray-bot${NC}"
 fi
 
-# --- 9. Автотестирование ---
-echo -e "${YELLOW}[9/10] Тестирование...${NC}"
+# --- 10. Автотестирование ---
+echo -e "${YELLOW}[10/10] Тестирование...${NC}"
 if ss -tulpn | grep -q ":443.*xray"; then
     echo -e "${GREEN}✓ Порт 443 слушается Xray${NC}"
 else
     echo -e "${RED}✗ Порт 443 не слушается!${NC}"
 fi
-
+if ss -tulpn | grep -q ":8443.*xray"; then
+    echo -e "${GREEN}✓ Порт 8443 (Hysteria2) слушается${NC}"
+else
+    echo -e "${RED}✗ Порт 8443 не слушается!${NC}"
+fi
+if ss -tulpn | grep -q ":8081.*xray"; then
+    echo -e "${GREEN}✓ Порт 8081 (SplitHTTP) слушается${NC}"
+else
+    echo -e "${RED}✗ Порт 8081 не слушается!${NC}"
+fi
 if ss -tulpn | grep -q ":8080.*xray"; then
     echo -e "${GREEN}✓ API порт 8080 слушается${NC}"
 else
     echo -e "${RED}✗ API порт 8080 не слушается!${NC}"
 fi
-
 if iptables -t nat -L POSTROUTING | grep -q MASQUERADE; then
     echo -e "${GREEN}✓ NAT правило активно${NC}"
 else
@@ -167,7 +185,6 @@ mv "$TMP_CONFIG" "$CONFIG_FILE"
 systemctl reload xray 2>/dev/null || systemctl restart xray
 echo -e "${GREEN}✓ Прямое редактирование конфига работает${NC}"
 
-# --- 10. Завершение ---
 echo -e "${GREEN}=== Установка завершена! ===${NC}"
 echo "--------------------------------------------------"
 echo "Публичный ключ сервера: $PUBLIC_KEY"
