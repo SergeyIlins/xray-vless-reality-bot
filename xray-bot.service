@@ -13,3 +13,25 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
+
+
+
+[Unit]
+Description=Cleanup expired Xray clients
+
+[Service]
+Type=oneshot
+ExecStart=/opt/xray-bot/venv/bin/python /opt/xray-bot/cleanup_expired.py
+User=root
+
+
+
+[Unit]
+Description=Run Xray cleanup every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
