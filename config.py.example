@@ -1,18 +1,6 @@
 TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-ALLOWED_USERS = {123456789}
-SERVER_IP = "YOUR_SERVER_IP"
-PUBLIC_KEY = "PUBLIC_KEY_FROM_XRAY"
-SHORT_ID = "YOUR_SHORT_ID"
-SNI = "www.microsoft.com"
-
-# === SplitHTTP ===
-SPLIT_PORT = 8081
-SPLIT_PATH = "/stream"
-
-# === AmneziaWG ===
-WG_SERVER_IP = "YOUR_SERVER_IP"
-WG_PORT = 51820
-WG_SERVER_PUBKEY = "SERVER_PUBLIC_KEY"
-WG_SERVER_PRIVKEY = "SERVER_PRIVATE_KEY"
-WG_SUBNET = "10.9.0.0/24"
-SERVER_WG_IP = "10.9.0.1"
+ALLOWED_USERS = {123456789}          # Ваш Telegram ID
+SERVER_IP = "YOUR_SERVER_IP"         # IP или домен сервера
+PUBLIC_KEY = "PUBLIC_KEY_FROM_XRAY"  # Публичный ключ из вывода xray x25519
+SHORT_ID = "YOUR_SHORT_ID"           # Hex-строка из 16 символов
+SNI = "www.microsoft.com"            # Домен для маскировки
